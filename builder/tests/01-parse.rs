@@ -23,6 +23,14 @@
 
 use derive_builder::Builder;
 
+// #[derive(Builder)]
+// pub struct Command {
+//     executable: String,
+//     args: Vec<String>,
+//     env: Vec<String>,
+//     current_dir: String,
+// }
+
 #[derive(Builder)]
 pub struct Command {
     executable: String,
@@ -30,7 +38,5 @@ pub struct Command {
     env: Vec<String>,
     current_dir: Option<String>,
 }
-fn main() {
-    let builder = Command::builder();
-    let _ = builder;
-}
+
+fn main() {}
