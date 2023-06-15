@@ -1,9 +1,7 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenTree;
 use quote::quote;
-use syn::spanned::Spanned;
 use syn::{parse_macro_input, DeriveInput};
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -124,12 +122,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 }
 
 fn builder_of(f: &syn::Field) -> Option<&syn::Attribute> {
-    for attr in &f.attrs {
-        if attr.path.segments.len() == 1 && attr.path.segments[0].ident == "builder" {
-            return Some(attr);
-        }
-    }
-    None
+    return f
+        .attrs
+        .iter()
+        .find(|&attr| attr.path.segments.len() == 1 && attr.path.segments[0].ident == "builder");
 }
 
 fn extend_methods(f: &syn::Field) -> Option<(bool, proc_macro2::TokenStream)> {
