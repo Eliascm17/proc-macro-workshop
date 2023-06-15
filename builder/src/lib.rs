@@ -3,6 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use proc_macro2::TokenTree;
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::{parse_macro_input, DeriveInput};
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -122,12 +123,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-fn builder_of(f: &syn::Field) -> Option<proc_macro2::Group> {
+fn builder_of(f: &syn::Field) -> Option<&syn::Attribute> {
     for attr in &f.attrs {
         if attr.path.segments.len() == 1 && attr.path.segments[0].ident == "builder" {
-            if let TokenTree::Group(g) = attr.tts.clone().into_iter().next().unwrap() {
-                return Some(g);
-            }
+            return Some(attr);
         }
     }
     None
@@ -136,25 +135,34 @@ fn builder_of(f: &syn::Field) -> Option<proc_macro2::Group> {
 fn extend_methods(f: &syn::Field) -> Option<(bool, proc_macro2::TokenStream)> {
     let name = f.ident.as_ref().unwrap();
     let g = builder_of(f)?;
-
-    let mut tokens = g.stream().into_iter();
-
-    match tokens.next().unwrap() {
-        TokenTree::Ident(ref i) => assert_eq!(i, "each"),
-        tt => panic!("expected 'each' found {}", tt),
+    fn mk_err<T: quote::ToTokens>(t: T) -> Option<(bool, proc_macro2::TokenStream)> {
+        Some((
+            false,
+            syn::Error::new_spanned(t, "expected `builder(each = \"...\")`").to_compile_error(),
+        ))
     }
 
-    match tokens.next().unwrap() {
-        TokenTree::Punct(ref p) => assert_eq!(p.as_char(), '='),
-        tt => panic!("expected '=' found {}", tt),
-    }
-
-    let arg = match tokens.next().unwrap() {
-        TokenTree::Literal(l) => l,
-        tt => panic!("expected string found {}", tt),
+    let meta = match g.parse_meta() {
+        Ok(syn::Meta::List(mut nvs)) => {
+            assert_eq!(nvs.ident, "builder");
+            if nvs.nested.len() != 1 {
+                return mk_err(nvs);
+            }
+            match nvs.nested.pop().unwrap().into_value() {
+                syn::NestedMeta::Meta(syn::Meta::NameValue(nv)) => {
+                    if nv.ident != "each" {
+                        return mk_err(nvs);
+                    }
+                    nv
+                }
+                meta => return mk_err(meta),
+            }
+        }
+        Ok(meta) => return mk_err(meta),
+        Err(e) => return Some((false, e.to_compile_error())),
     };
 
-    match syn::Lit::new(arg) {
+    match meta.lit {
         syn::Lit::Str(s) => {
             let arg = syn::Ident::new(&s.value(), s.span());
             let inner_ty = ty_inner_type("Vec", &f.ty).unwrap();
