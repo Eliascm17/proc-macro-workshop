@@ -8,7 +8,7 @@ use syn::{parse_macro_input, DeriveInput};
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
 
-    eprintln!("{:#?}", ast);
+    // eprintln!("{:#?}", ast);
 
     let name = &ast.ident;
     let bname = format!("{}Builder", name);
@@ -22,7 +22,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     } else {
         unimplemented!();
     };
-    let optionized = fields.iter().map(|f| {
+
+    let builder_fields = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = f.ty.clone();
         if ty_inner_type("Option", &ty).is_some() || builder_of(f).is_some() {
@@ -58,10 +59,24 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         };
 
+        // we need to take care not to include a builder method with the same name as the set method
+        // for example, consider this struct:
+        //
+        //```
+        // #[derive(Builder)]
+        // struct Command {
+        //     #[builder(each = "env")]
+        //     env: Vec<String>
+        // }
+        //```
+        //
+        // It would not be okay to generate both `env(Vec<String>)` for the field *and*
+        // `env(String)` for the builder.
         match extend_methods(f) {
             None => set_method,
             Some((true, extend_method)) => extend_method,
             Some((false, extend_method)) => {
+                // safe to generate both!
                 quote! {
                     #set_method
                     #extend_method
@@ -70,6 +85,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    // for when you call Builder::build
     let build_fields = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = f.ty.clone();
@@ -95,9 +111,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    let doc = format!("\
+                Implements the [builder pattern] for [`{}`]\n\
+                \n\
+                [builder pattern]: https://rust-lang-nursery.github.io/api-guidelines/type-safety.html#c-builder
+        ", name);
+
     let expanded = quote! {
+        #[doc = #doc]
         pub struct #bident {
-            #(#optionized,)*
+            #(#builder_fields,)*
         }
         impl #bident {
             #(#methods)*
@@ -130,6 +153,7 @@ fn builder_of(f: &syn::Field) -> Option<&syn::Attribute> {
 fn extend_methods(f: &syn::Field) -> Option<(bool, proc_macro2::TokenStream)> {
     let name = f.ident.as_ref().unwrap();
     let g = builder_of(f)?;
+
     fn mk_err<T: quote::ToTokens>(t: T) -> Option<(bool, proc_macro2::TokenStream)> {
         Some((
             false,
@@ -139,21 +163,31 @@ fn extend_methods(f: &syn::Field) -> Option<(bool, proc_macro2::TokenStream)> {
 
     let meta = match g.parse_meta() {
         Ok(syn::Meta::List(mut nvs)) => {
+            // list here is .. in #[builder(..)]
             assert_eq!(nvs.ident, "builder");
             if nvs.nested.len() != 1 {
                 return mk_err(nvs);
             }
+            // nvs.nested[0] here is (hopefully): each = "foo"
             match nvs.nested.pop().unwrap().into_value() {
                 syn::NestedMeta::Meta(syn::Meta::NameValue(nv)) => {
+                    // the last element was
                     if nv.ident != "each" {
                         return mk_err(nvs);
                     }
                     nv
                 }
-                meta => return mk_err(meta),
+                meta => {
+                    // nvs.nested[0] was not k = v
+                    return mk_err(meta);
+                }
             }
         }
-        Ok(meta) => return mk_err(meta),
+        Ok(meta) => {
+            // inside of #[] there was either just an identifier (`#[builder]`) or a key-value
+            // mapping (`#[builder = "foo"]`), neither of which are okay
+            return mk_err(meta);
+        }
         Err(e) => return Some((false, e.to_compile_error())),
     };
 
