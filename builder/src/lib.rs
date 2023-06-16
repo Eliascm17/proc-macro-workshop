@@ -33,29 +33,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
     });
 
     let methods = fields.iter().map(|f| {
-        let name = &f.ident;
-        let ty = f.ty.clone();
+        let name = f.ident.as_ref().unwrap();
+        let ty = &f.ty;
 
-        let set_method = if let Some(inner_ty) = ty_inner_type("Option", &ty) {
-            quote! {
-                pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
-                }
-            }
+        let (arg_type, value) = if let Some(inner_ty) = ty_inner_type("Option", ty) {
+            // if the field is an Option<T>, setting should take just a T,
+            // but we then need to store it with a Some.
+            (inner_ty, quote! { std::option::Option::Some(#name) })
         } else if builder_of(f).is_some() {
-            quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = #name;
-                    self
-                }
-            }
+            // if the field is a builder, it is a Vec<T>, and the value in the builder
+            // is not wrapped in an Option, so we shouldn't wrap the value in Some
+            (ty, quote! { #name })
         } else {
-            quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
-                }
+            // otherwise, we take the type used by the target,
+            // and we store it in an Option in the builder
+            // in case it was never set
+            (ty, quote! { std::option::Option::Some(#name) })
+        };
+
+        let set_method = quote! {
+            pub fn #name(&mut self, #name: #arg_type) -> &mut Self {
+                self.#name = #value;
+                self
             }
         };
 
@@ -88,10 +87,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let build_empty = fields.iter().map(|f| {
         let name = &f.ident;
         if builder_of(f).is_some() {
-            quote! { #name: Vec::new() }
+            quote! { #name: std::vec::Vec::new() }
         } else {
             quote! {
-                #name: None
+                #name: std::option::Option::None
             }
         }
     });
@@ -103,14 +102,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #bident {
             #(#methods)*
 
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
-                Ok(#name {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
+                std::result::Result::Ok(#name {
                     #(#build_fields,)*
                 })
             }
         }
         impl #name {
-            fn builder() -> #bident {
+            pub fn builder() -> #bident {
                 #bident {
                     #(#build_empty,)*
                 }
@@ -173,6 +172,7 @@ fn extend_methods(f: &syn::Field) -> Option<(bool, proc_macro2::TokenStream)> {
     }
 }
 
+// get inner type of type: Vec<String> -> String
 fn ty_inner_type<'a>(wrapper: &str, ty: &'a syn::Type) -> Option<&'a syn::Type> {
     if let syn::Type::Path(ref p) = ty {
         if p.path.segments.len() != 1 || p.path.segments[0].ident != wrapper {
