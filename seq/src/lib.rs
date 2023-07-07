@@ -74,38 +74,31 @@ impl SeqMacroInput {
                 lit.set_span(ident.span());
                 proc_macro2::TokenTree::Literal(lit)
             }
-            // "else" case for Ident that is found in token stream
+            // "else" case for Ident where the ident does NOT equal self.ident in token stream
             proc_macro2::TokenTree::Ident(mut ident) => {
                 // search for ~ followed by self.ident at the end of an identifier
                 // OR ~ self.ident ~
                 let mut peek = rest.clone();
-                match peek.next() {
-                    // if the NEXT token is SOME and also is a punct that is `~`
-                    Some(proc_macro2::TokenTree::Punct(ref punct)) if punct.as_char() == '~' => {
-                        match peek.next() {
-                            // check peek's next next and see if it's an Ident => f~N searching for N
-                            Some(proc_macro2::TokenTree::Ident(ref ident2))
-                                if ident2 == &self.ident =>
-                            {
-                                // mutate the original ident to go from f~N to f3
-                                ident = proc_macro2::Ident::new(
-                                    &format!("{}{}", ident, i),
-                                    ident.span(),
-                                );
-                                // now set rest to be the current index and go from f~N to f~N
-                                //                                                  ^        ^
-                                *rest = peek.clone();
+                match (peek.next(), peek.next()) {
+                    (
+                        // if the NEXT token is SOME and also is a punct that is `~`
+                        Some(proc_macro2::TokenTree::Punct(ref punct)),
+                        // check peek's next next is SOME and also and see if it's an Ident => f~N searching for N
+                        Some(proc_macro2::TokenTree::Ident(ref ident2)),
+                    ) if punct.as_char() == '~' && ident2 == &self.ident => {
+                        // mutate the original ident to go from f~N to f3
+                        ident = proc_macro2::Ident::new(&format!("{}{}", ident, i), ident.span());
+                        // now set rest to be the current index and go from f~N to f~N
+                        //                                                  ^        ^
+                        *rest = peek.clone();
 
-                                // we may also consume another ~
-                                // that way f~N and f~N~ work when fully expanded
-                                match peek.next() {
-                                    Some(proc_macro2::TokenTree::Punct(ref punct))
-                                        if punct.as_char() == '~' =>
-                                    {
-                                        *rest = peek.clone();
-                                    }
-                                    _ => {}
-                                }
+                        // we may also consume another ~
+                        // that way f~N and f~N~ work when fully expanded
+                        match peek.next() {
+                            Some(proc_macro2::TokenTree::Punct(ref punct))
+                                if punct.as_char() == '~' =>
+                            {
+                                *rest = peek.clone();
                             }
                             _ => {}
                         }
