@@ -10,6 +10,7 @@ use syn::{parse_macro_input, Result, Token};
 struct SeqMacroInput {
     from: syn::LitInt,
     to: syn::LitInt,
+    inclusive: bool,
     ident: syn::Ident,
     tt: proc_macro2::TokenStream,
 }
@@ -23,7 +24,12 @@ impl Parse for SeqMacroInput {
         let ident = syn::Ident::parse(input)?;
         let _in = <Token![in]>::parse(input)?;
         let from = syn::LitInt::parse(input)?;
-        let _dots = <Token![..]>::parse(input)?;
+        let inclusive = input.peek(Token![..=]);
+        if inclusive {
+            <Token![..=]>::parse(input)?;
+        } else {
+            <Token![..]>::parse(input)?;
+        }
         let to = syn::LitInt::parse(input)?;
         let content;
         let _braces = syn::braced!(content in input);
@@ -33,6 +39,7 @@ impl Parse for SeqMacroInput {
         Ok(SeqMacroInput {
             from,
             to,
+            inclusive,
             ident,
             tt,
         })
@@ -52,6 +59,14 @@ enum Mode {
 }
 
 impl SeqMacroInput {
+    fn range(&self) -> impl Iterator<Item = u64> {
+        if self.inclusive {
+            self.from.value()..(self.to.value() + 1)
+        } else {
+            self.from.value()..self.to.value()
+        }
+    }
+
     fn expand2(
         &self,
         tt: proc_macro2::TokenTree,
@@ -135,7 +150,8 @@ impl SeqMacroInput {
                             // expand ... for each sequence in the range
                             *mutated = true;
                             *rest = peek;
-                            return (self.from.value()..self.to.value())
+                            return self
+                                .range()
                                 .map(|i| self.expand_pass(rep.stream(), Mode::ReplaceIdent(i)))
                                 .map(|(ts, _)| ts)
                                 .collect();
@@ -170,7 +186,7 @@ impl SeqMacroInput {
             return out;
         }
 
-        (self.from.value()..self.to.value())
+        self.range()
             .map(|i| self.expand_pass(stream.clone(), Mode::ReplaceIdent(i)))
             .map(|(ts, _)| ts)
             .collect()
