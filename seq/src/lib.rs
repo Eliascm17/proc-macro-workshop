@@ -15,7 +15,7 @@ struct SeqMacroInput {
     tt: proc_macro2::TokenStream,
 }
 
-// seq!(N #ident in 1..3 #from..to {
+// seq!(N #ident in 1..3 #from..#to {
 //     println!("{}", i); #tt
 // });
 
@@ -24,6 +24,7 @@ impl Parse for SeqMacroInput {
         let ident = syn::Ident::parse(input)?;
         let _in = <Token![in]>::parse(input)?;
         let from = syn::LitInt::parse(input)?;
+        // peek ahead to the next token and see if there is an `=` sign
         let inclusive = input.peek(Token![..=]);
         if inclusive {
             <Token![..=]>::parse(input)?;
@@ -46,9 +47,9 @@ impl Parse for SeqMacroInput {
     }
 }
 
-impl Into<proc_macro2::TokenStream> for SeqMacroInput {
-    fn into(self) -> proc_macro2::TokenStream {
-        self.expand(self.tt.clone())
+impl From<SeqMacroInput> for proc_macro2::TokenStream {
+    fn from(input: SeqMacroInput) -> Self {
+        input.expand(input.tt.clone())
     }
 }
 
@@ -59,12 +60,21 @@ enum Mode {
 }
 
 impl SeqMacroInput {
+    // helper function for returning iterator based on if the macro input is inclusive or not
     fn range(&self) -> impl Iterator<Item = u64> {
         if self.inclusive {
             self.from.value()..(self.to.value() + 1)
         } else {
             self.from.value()..self.to.value()
         }
+    }
+
+    // replace individual idents over specified range
+    fn replace_idents(&self, tts: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        self.range()
+            .map(|i| self.expand_pass(tts.clone(), Mode::ReplaceIdent(i)))
+            .map(|(ts, _)| ts)
+            .collect()
     }
 
     fn expand2(
@@ -75,20 +85,23 @@ impl SeqMacroInput {
         mode: Mode,
     ) -> proc_macro2::TokenStream {
         let tt = match tt {
-            // A token stream surrounded by bracket delimiters
+            // A token tree surrounded by delimiters (`()`, `{}`, `[]`) and needs to be expanded
             proc_macro2::TokenTree::Group(g) => {
+                // expand the group
                 let (expanded, g_mutated) = self.expand_pass(g.stream(), mode);
-                // create new group and call expand on it recursively
+                // create new group of the newly expanded token stream
                 let mut expanded = proc_macro2::Group::new(g.delimiter(), expanded);
-                // retain the span from the the groupd and set it to the now expanded Group
+                // set mutated if mutauted or g_mutated is true
                 *mutated |= g_mutated;
+                // retain the span from the the groupd and set it to the now expanded Group
                 expanded.set_span(g.span());
                 proc_macro2::TokenTree::Group(expanded)
             }
-            // in this case "N"
             // if from this token tree it is an Ident AND this Ident equals the one parsed
             // into SeqMacroInput. In this case `if N == N`
+            // self.ident could be `i`, `N`, `x`, etc.
             proc_macro2::TokenTree::Ident(ref ident) if ident == &self.ident => {
+                // if we need to replace the individual ident
                 if let Mode::ReplaceIdent(i) = mode {
                     // create u64 literal with the current value
                     let mut lit = proc_macro2::Literal::u64_unsuffixed(i);
@@ -97,6 +110,7 @@ impl SeqMacroInput {
                     *mutated = true;
                     proc_macro2::TokenTree::Literal(lit)
                 } else {
+                    // no op
                     proc_macro2::TokenTree::Ident(ident.clone())
                 }
             }
@@ -107,6 +121,7 @@ impl SeqMacroInput {
                 let mut peek = rest.clone();
                 match (mode, peek.next(), peek.next()) {
                     (
+                        // replace individual ident
                         Mode::ReplaceIdent(i),
                         // if the NEXT token is SOME and also is a punct that is `~`
                         Some(proc_macro2::TokenTree::Punct(ref punct)),
@@ -114,6 +129,7 @@ impl SeqMacroInput {
                         Some(proc_macro2::TokenTree::Ident(ref ident2)),
                     ) if punct.as_char() == '~' && ident2 == &self.ident => {
                         // mutate the original ident to go from f~N to f3
+                        // ident: f, punct: ~, ident2: N
                         ident = proc_macro2::Ident::new(&format!("{}{}", ident, i), ident.span());
                         // now set rest to be the current index and go from f~N to f~N
                         //                                                  ^        ^
@@ -147,14 +163,13 @@ impl SeqMacroInput {
                         ) if rep.delimiter() == proc_macro2::Delimiter::Parenthesis
                             && star.as_char() == '*' =>
                         {
+                            // rep: `(...)`, star: `*`
                             // expand ... for each sequence in the range
                             *mutated = true;
                             *rest = peek;
-                            return self
-                                .range()
-                                .map(|i| self.expand_pass(rep.stream(), Mode::ReplaceIdent(i)))
-                                .map(|(ts, _)| ts)
-                                .collect();
+
+                            // replace ... with individual idents over the given range
+                            return self.replace_idents(rep.stream());
                         }
                         _ => {}
                     }
@@ -166,6 +181,8 @@ impl SeqMacroInput {
         std::iter::once(tt).collect()
     }
 
+    /// `expand_pass` applies `expand2` to each token tree in a token stream and
+    /// returns the expanded token stream along with a boolean flag to indicate whether any mutation occurred.
     fn expand_pass(
         &self,
         stream: proc_macro2::TokenStream,
@@ -175,6 +192,7 @@ impl SeqMacroInput {
         let mut mutated = false;
         let mut tts = stream.into_iter();
         while let Some(tt) = tts.next() {
+            // for every tts in the iter, expand it and mutate if necessary
             out.extend(self.expand2(tt, &mut tts, &mut mutated, mode));
         }
         (out, mutated)
@@ -182,14 +200,13 @@ impl SeqMacroInput {
 
     fn expand(&self, stream: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
         let (out, mutated) = self.expand_pass(stream.clone(), Mode::ReplaceSequence);
+        // if true return the out token stream because all necessary mutations would've already happened
         if mutated {
             return out;
         }
 
-        self.range()
-            .map(|i| self.expand_pass(stream.clone(), Mode::ReplaceIdent(i)))
-            .map(|(ts, _)| ts)
-            .collect()
+        // #(...)* wasn't found and now individual identifiers need to be replaced over this range
+        self.replace_idents(stream)
     }
 }
 
